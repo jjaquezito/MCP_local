@@ -1,0 +1,6 @@
+psycopg[binary]>=3.2
+python-dotenv>=1.0
+
+# predict_match
+scikit-learn>=1.5
+joblib>=1.3
