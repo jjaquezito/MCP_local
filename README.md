@@ -53,12 +53,31 @@ Call the `data_coverage` tool to check what exists for any league and season.
 Requires **Python 3.10+** and **PostgreSQL 14+**.
 
 ```bash
-git clone https://github.com/jaq23369/football-intelligence-mcp.git
-cd football-intelligence-mcp
+git clone https://github.com/jjaquezito/MCP_local.git
+cd MCP_local
 
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+```
 
+### PostgreSQL
+
+You need a **running** PostgreSQL server before `createdb`/`pg_restore` will
+work — if you don't have one yet:
+
+```bash
+# macOS
+brew install postgresql@14
+brew services start postgresql@14        # keeps running across reboots
+
+# Debian/Ubuntu
+sudo apt install postgresql
+sudo systemctl start postgresql
+```
+
+Then restore the database:
+
+```bash
 createdb football
 pg_restore -d football data/football.dump
 
@@ -73,6 +92,11 @@ psql -d football -c "SELECT count(*) FROM fixtures;"
 # -------
 #  36982
 ```
+
+If `createdb`/`pg_restore`/`psql` fail with something like `connection
+refused` or `role "postgres" does not exist`, PostgreSQL either isn't
+installed or isn't running — that's almost always the actual problem, not
+`football.dump` itself. Go back to the PostgreSQL step above.
 
 ## Running the server
 
