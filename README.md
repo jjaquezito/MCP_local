@@ -1,9 +1,8 @@
 # Football Intelligence MCP
 
-A local **Model Context Protocol** server that gives any MCP host — Claude
-Desktop, Claude Code, or a custom chatbot — access to a curated historical
-football database covering **36,982 matches** across Europe's seven top
-competitions from 2010 to 2025.
+A local **Model Context Protocol** server that gives any MCP host access to a
+curated historical football database covering **36,982 matches** across
+Europe's seven top competitions from 2010 to 2025.
 
 The protocol is implemented **directly over JSON-RPC 2.0, without using any
 MCP SDK**: every message is built and parsed by hand following the
@@ -91,26 +90,46 @@ printf '%s\n' \
   | python server.py
 ```
 
-### Claude Desktop
+### Adding it to your own chatbot
 
-Add to `claude_desktop_config.json`:
+Your host is its own program, so there's no config file shortcut — it has to
+speak JSON-RPC 2.0 over this process's stdin/stdout directly. The minimum
+sequence, in any language:
 
-```json
-{
-  "mcpServers": {
-    "football": {
-      "command": "/absolute/path/to/football-intelligence-mcp/.venv/bin/python",
-      "args": ["/absolute/path/to/football-intelligence-mcp/server.py"]
-    }
-  }
-}
-```
+1. **Spawn the server** with `DATABASE_URL` set in its environment, keeping
+   stdin/stdout as pipes:
+   ```python
+   proc = subprocess.Popen(
+       ["/absolute/path/to/.venv/bin/python", "/absolute/path/to/server.py"],
+       stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+       env={**os.environ, "DATABASE_URL": "postgresql://..."},
+       text=True, bufsize=1,
+   )
+   ```
+2. **Handshake** — one JSON object per line, written to stdin / read from stdout:
+   ```python
+   send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+       "protocolVersion": "2025-06-18", "capabilities": {},
+       "clientInfo": {"name": "my-host", "version": "1.0"}}})
+   recv()  # -> serverInfo + capabilities
+   send({"jsonrpc": "2.0", "method": "notifications/initialized"})  # no "id": no reply comes back
+   ```
+3. **Fetch the catalog** and translate it to whatever your LLM's tool-call
+   format expects. For Claude's Messages API, `inputSchema` maps straight to
+   `input_schema` — nothing else about the shape changes:
+   ```python
+   send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+   tools = recv()["result"]["tools"]
+   ```
+4. **Call a tool** the same way, matching `id` to correlate request/response:
+   ```python
+   send({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {
+       "name": "search_team", "arguments": {"query": "Liverpool"}}})
+   result = recv()["result"]  # {"content": [{"type": "text", "text": "..."}], "isError": bool}
+   ```
 
-### Claude Code
-
-```bash
-claude mcp add football -- /absolute/path/to/.venv/bin/python /absolute/path/to/server.py
-```
+That's the entire contract — see **Protocol** below for the full method and
+error reference.
 
 ## Protocol
 
