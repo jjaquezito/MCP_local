@@ -82,6 +82,16 @@ def search_player(query: str, limit: int = 10) -> list[dict[str, Any]]:
     )
 
 
+def get_league_info(league_id: int) -> dict[str, Any] | None:
+    # Escudo y bandera de una competicion. No hay imagenes de trofeos en la
+    # base (API-Football las expone por un endpoint distinto que no se
+    # extrajo); esto es lo mas cercano disponible para identidad visual.
+    return _one(
+        "SELECT league_id, name, type, country, logo, flag FROM leagues WHERE league_id = %s",
+        (league_id,),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Partidos
 # ---------------------------------------------------------------------------
@@ -93,9 +103,9 @@ def get_match(fixture_id: int) -> dict[str, Any] | None:
         """
         SELECT f.fixture_id, l.name AS liga, f.season, f.round,
                f.kickoff_utc, f.referee, v.name AS estadio, v.city AS ciudad,
-               f.status_short AS estado,
-               ht.team_id AS local_id,  ht.name AS local,
-               at.team_id AS visita_id, at.name AS visita,
+               v.image AS estadio_imagen, f.status_short AS estado,
+               ht.team_id AS local_id,  ht.name AS local,  ht.logo AS local_logo,
+               at.team_id AS visita_id, at.name AS visita, at.logo AS visita_logo,
                f.goals_home, f.goals_away, f.ht_home, f.ht_away, f.result
         FROM fixtures f
         JOIN leagues l USING (league_id)
@@ -177,13 +187,14 @@ def get_team_form(
         {"team": team_id, "before": before, "last": last},
     )
 
-    team = _one("SELECT team_id, name FROM teams WHERE team_id = %s", (team_id,))
+    team = _one("SELECT team_id, name, logo FROM teams WHERE team_id = %s", (team_id,))
     victorias = sum(1 for m in matches if m["resultado"] == "V")
     empates = sum(1 for m in matches if m["resultado"] == "E")
     derrotas = sum(1 for m in matches if m["resultado"] == "D")
 
     return {
         "equipo": team["name"] if team else None,
+        "equipo_logo": team["logo"] if team else None,
         "team_id": team_id,
         "partidos_considerados": len(matches),
         "hasta": before.isoformat() if before else "hoy",
@@ -198,12 +209,123 @@ def get_team_form(
     }
 
 
+def get_recent_lineup(team_id: int) -> dict[str, Any]:
+    # Formacion, entrenador y once titular del ULTIMO partido con datos de
+    # alineacion. No es una prediccion de quien va a jugar -- es honesto
+    # mostrarlo como "lo mas reciente visto", no como confirmado para el
+    # proximo partido (lesiones, sanciones y rotacion pueden cambiarlo).
+    # Formacion/entrenador solo existen desde 2015 (ver README).
+    partido = _one(
+        """
+        SELECT l.fixture_id, l.formation, l.coach_id, f.kickoff_utc, f.season,
+               lg.name AS liga,
+               CASE WHEN f.home_team_id = %(t)s THEN f.away_team_id ELSE f.home_team_id END AS rival_id,
+               CASE WHEN f.home_team_id = %(t)s THEN at.name ELSE ht.name END AS rival,
+               (f.home_team_id = %(t)s) AS de_local
+        FROM lineups l
+        JOIN fixtures f ON f.fixture_id = l.fixture_id
+        JOIN leagues lg ON lg.league_id = f.league_id
+        JOIN teams ht ON ht.team_id = f.home_team_id
+        JOIN teams at ON at.team_id = f.away_team_id
+        WHERE l.team_id = %(t)s AND l.formation IS NOT NULL AND l.formation <> ''
+        ORDER BY f.kickoff_utc DESC
+        LIMIT 1
+        """,
+        {"t": team_id},
+    )
+    if partido is None:
+        return {
+            "team_id": team_id,
+            "nota": f"Sin datos de alineacion (formacion/entrenador solo existen desde {STATS_FIRST_SEASON}).",
+        }
+
+    coach = None
+    if partido["coach_id"] is not None:
+        coach = _one(
+            "SELECT coach_id, name, nationality, photo FROM coaches WHERE coach_id = %s",
+            (partido["coach_id"],),
+        )
+
+    titulares = _rows(
+        """
+        SELECT p.player_id, p.name, p.photo, lp.shirt_number, lp.position, lp.grid,
+               fps.rating
+        FROM lineup_players lp
+        JOIN players p ON p.player_id = lp.player_id
+        LEFT JOIN fixture_player_statistics fps
+               ON fps.fixture_id = lp.fixture_id AND fps.player_id = lp.player_id
+        WHERE lp.fixture_id = %(f)s AND lp.team_id = %(t)s AND lp.is_starter = true
+        ORDER BY lp.grid NULLS LAST, lp.shirt_number
+        """,
+        {"f": partido["fixture_id"], "t": team_id},
+    )
+
+    return {
+        "team_id": team_id,
+        "formacion": partido["formation"],
+        "entrenador": coach,
+        "titulares": titulares,
+        "contexto": {
+            "fixture_id": partido["fixture_id"],
+            "rival": partido["rival"],
+            "rival_id": partido["rival_id"],
+            "de_local": partido["de_local"],
+            "liga": partido["liga"],
+            "kickoff_utc": partido["kickoff_utc"],
+        },
+        "nota": "Ultima alineacion vista, no una confirmacion para el proximo partido.",
+    }
+
+
+def get_team_squad(team_id: int, last: int = 10) -> dict[str, Any]:
+    # Plantilla que ha jugado los ultimos `last` partidos del equipo, con
+    # acumulados (goles, asistencias, rating) y foto de cada jugador. Sirve
+    # para responder "quienes son los jugadores clave de este equipo ahora".
+    jugadores = _rows(
+        """
+        WITH recientes AS (
+            SELECT f.fixture_id
+            FROM fixtures f
+            WHERE (f.home_team_id = %(t)s OR f.away_team_id = %(t)s)
+              AND f.result IS NOT NULL
+            ORDER BY f.kickoff_utc DESC
+            LIMIT %(last)s
+        )
+        SELECT p.player_id, p.name, p.photo,
+               count(*) AS partidos,
+               sum(fps.minutes) AS minutos,
+               sum(fps.goals_total) AS goles,
+               sum(fps.assists) AS asistencias,
+               round(avg(fps.rating), 2) AS rating_promedio
+        FROM fixture_player_statistics fps
+        JOIN recientes r ON r.fixture_id = fps.fixture_id
+        JOIN players p ON p.player_id = fps.player_id
+        WHERE fps.team_id = %(t)s
+        GROUP BY p.player_id, p.name, p.photo
+        ORDER BY (coalesce(sum(fps.goals_total), 0) + coalesce(sum(fps.assists), 0)) DESC,
+                 rating_promedio DESC NULLS LAST
+        """,
+        {"t": team_id, "last": last},
+    )
+    team = _one("SELECT team_id, name, logo FROM teams WHERE team_id = %s", (team_id,))
+
+    return {
+        "team_id": team_id,
+        "equipo": team["name"] if team else None,
+        "equipo_logo": team["logo"] if team else None,
+        "partidos_considerados": last,
+        "jugador_mas_determinante": jugadores[0] if jugadores else None,
+        "plantilla_reciente": jugadores[:15],
+    }
+
+
 def get_head_to_head(team_a: int, team_b: int, limit: int = 10) -> dict[str, Any]:
     # Historial directo entre dos equipos.
     matches = _rows(
         """
         SELECT f.fixture_id, f.kickoff_utc, l.name AS liga, f.season,
-               ht.name AS local, at.name AS visita,
+               ht.name AS local, ht.logo AS local_logo,
+               at.name AS visita, at.logo AS visita_logo,
                f.goals_home, f.goals_away
         FROM fixtures f
         JOIN leagues l USING (league_id)
@@ -265,8 +387,11 @@ def get_head_to_head(team_a: int, team_b: int, limit: int = 10) -> dict[str, Any
     )
     stats_lookup = {r["team_id"]: r for r in stats_por_equipo}
 
-    names = _rows("SELECT team_id, name FROM teams WHERE team_id IN (%s, %s)", (team_a, team_b))
-    lookup = {r["team_id"]: r["name"] for r in names}
+    names = _rows(
+        "SELECT team_id, name, logo FROM teams WHERE team_id IN (%s, %s)", (team_a, team_b)
+    )
+    info = {r["team_id"]: r for r in names}
+    lookup = {tid: r["name"] for tid, r in info.items()}
 
     def _promedios(team_id: int) -> dict[str, Any]:
         s = stats_lookup.get(team_id)
@@ -283,6 +408,10 @@ def get_head_to_head(team_a: int, team_b: int, limit: int = 10) -> dict[str, Any
     return {
         "equipo_a": lookup.get(team_a),
         "equipo_b": lookup.get(team_b),
+        "equipo_a_id": team_a,
+        "equipo_a_logo": (info.get(team_a) or {}).get("logo"),
+        "equipo_b_id": team_b,
+        "equipo_b_logo": (info.get(team_b) or {}).get("logo"),
         "historial": tally,
         "ultimos_partidos": matches,
         "goles_promedio_partido": goles["goles_promedio_partido"] if goles else None,
@@ -502,8 +631,12 @@ def predict_match(home_team_id: int, away_team_id: int) -> dict[str, Any]:
     orden = list(modelo["pipeline"].named_steps["clf"].classes_)
     prob_por_clase = dict(zip(orden, proba))
 
-    nombres = _rows("SELECT team_id, name FROM teams WHERE team_id IN (%s, %s)", (home_team_id, away_team_id))
-    lookup = {r["team_id"]: r["name"] for r in nombres}
+    nombres = _rows(
+        "SELECT team_id, name, logo FROM teams WHERE team_id IN (%s, %s)",
+        (home_team_id, away_team_id),
+    )
+    info = {r["team_id"]: r for r in nombres}
+    lookup = {tid: r["name"] for tid, r in info.items()}
     ultima_actualizacion = min(
         (t for t in (home["last_match_utc"], away["last_match_utc"]) if t is not None),
         default=None,
@@ -512,6 +645,10 @@ def predict_match(home_team_id: int, away_team_id: int) -> dict[str, Any]:
     return {
         "local": lookup.get(home_team_id),
         "visitante": lookup.get(away_team_id),
+        "local_team_id": home_team_id,
+        "local_logo": (info.get(home_team_id) or {}).get("logo"),
+        "visitante_team_id": away_team_id,
+        "visitante_logo": (info.get(away_team_id) or {}).get("logo"),
         "probabilidad_local": round(float(prob_por_clase.get("H", 0.0)), 3),
         "probabilidad_empate": round(float(prob_por_clase.get("D", 0.0)), 3),
         "probabilidad_visitante": round(float(prob_por_clase.get("A", 0.0)), 3),
