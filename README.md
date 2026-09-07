@@ -121,7 +121,7 @@ Transport: stdio, newline-delimited JSON. Protocol version `2025-06-18`.
 | `initialize` | Handshake. Returns `serverInfo` and capabilities. |
 | `notifications/initialized` | Client notification. No `id`, no response. |
 | `ping` | Liveness check. Returns `{}`. |
-| `tools/list` | Returns the eleven tool definitions. |
+| `tools/list` | Returns the fourteen tool definitions. |
 | `tools/call` | Executes a tool. |
 
 Errors follow JSON-RPC 2.0: `-32700` parse error, `-32600` invalid request,
@@ -150,8 +150,8 @@ Call this first — every other team tool needs a `team_id`.
 
 ```json
 [{"team_id": 40, "name": "Liverpool", "country": "England",
-  "founded": 1892, "partidos": 762,
-  "primera_temporada": 2010, "ultima_temporada": 2025}]
+  "founded": 1892, "logo": "https://media.api-sports.io/football/teams/40.png",
+  "partidos": 762, "primera_temporada": 2010, "ultima_temporada": 2025}]
 ```
 
 ### `search_player`
@@ -192,6 +192,42 @@ guard against look-ahead bias when building predictive features.
  "arguments": {"team_id": 40, "last": 5, "before": "2020-01-01"}}
 ```
 
+### `get_recent_lineup`
+
+Formation, coach (with photo) and starting XI of a team's **last** match that
+has lineup data, each player including their `grid` position (`row:col`,
+API-Football's own notation for drawing a formation) and their match
+`rating` — enough to render an actual pitch diagram, not just a list. This
+is a reasonable stand-in for "probable lineup" — it is not a confirmation of
+who will actually start next; injuries and rotation can change it.
+Formation/coach data only exists from 2015 onward, same as match statistics.
+
+| Parameter | Type | Required |
+|---|---|---|
+| `team_id` | integer | yes |
+
+### `get_team_squad`
+
+Every player who appeared in a team's last N matches, with photo and
+accumulated goals/assists/average rating, plus `jugador_mas_determinante`
+(the player with the most goal involvements in that window) called out
+separately.
+
+| Parameter | Type | Required | Default |
+|---|---|---|---|
+| `team_id` | integer | yes | — |
+| `last` | integer | no | 10 |
+
+### `get_league_info`
+
+A competition's crest and flag. There are no trophy images in the database
+— API-Football exposes those through a separate endpoint that was never
+extracted — this is the closest available visual identity for a league.
+
+| Parameter | Type | Required |
+|---|---|---|
+| `league_id` | integer | yes |
+
 ### `get_head_to_head`
 
 Win/draw/loss balance between two teams, their most recent meetings, and
@@ -199,7 +235,8 @@ per-team averages (goals per match, yellow/red cards, fouls, corners) across
 their full history — useful context for deciding a bet, not just a prediction
 number. Cards/fouls/corners are only available for matches from 2015 onward;
 matches without statistics are excluded from those averages, not counted as
-zero.
+zero. Also returns `equipo_a_id`/`equipo_a_logo` and `equipo_b_id`/
+`equipo_b_logo` alongside the existing `equipo_a`/`equipo_b` name fields.
 
 | Parameter | Type | Required | Default |
 |---|---|---|---|
@@ -286,12 +323,18 @@ a match scheduled for next week just as well as one played five years ago.
 
 ```json
 {
-  "local": "Barcelona", "visitante": "Athletic Club",
+  "local": "Barcelona", "local_team_id": 529,
+  "local_logo": "https://media.api-sports.io/football/teams/529.png",
+  "visitante": "Athletic Club", "visitante_team_id": 531,
+  "visitante_logo": "https://media.api-sports.io/football/teams/531.png",
   "probabilidad_local": 0.779, "probabilidad_empate": 0.145, "probabilidad_visitante": 0.076,
   "modelo": "logistic_regression",
   "advertencia": "Probabilidad estadistica basada en historial, no una garantia..."
 }
 ```
+
+`*_logo` are direct `media.api-sports.io` URLs, ready to use as an `<img src>` with no
+proxying — a UI client doesn't need a separate lookup to render team crests.
 
 The trained model ships in `data/predict_model.joblib` (a few KB — a fitted
 scikit-learn pipeline, not raw weights). Retraining requires the full feature
