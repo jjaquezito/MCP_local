@@ -120,6 +120,52 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "get_recent_lineup",
+        "description": (
+            "Formacion, entrenador (con foto) y once titular del ULTIMO partido "
+            "con datos de alineacion de un equipo. Util como 'alineacion probable' "
+            "para un analisis o prediccion, pero es honestamente el ultimo once "
+            "visto, no una confirmacion del proximo partido -- lesiones y rotacion "
+            "pueden cambiarlo. Formacion/entrenador solo existen desde 2015."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"team_id": {"type": "integer"}},
+            "required": ["team_id"],
+        },
+    },
+    {
+        "name": "get_team_squad",
+        "description": (
+            "Plantilla que ha jugado los ultimos partidos de un equipo, con foto, "
+            "goles, asistencias y rating promedio de cada jugador, y quien es el "
+            "'jugador mas determinante' (mas goles + asistencias recientes). Usar "
+            "para responder que jugadores clave tiene un equipo ahora mismo."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "team_id": {"type": "integer"},
+                "last": {"type": "integer", "description": "Partidos recientes a considerar", "default": 10},
+            },
+            "required": ["team_id"],
+        },
+    },
+    {
+        "name": "get_league_info",
+        "description": "Escudo y bandera de una competicion (no hay imagenes de trofeos en la base).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "league_id": {
+                    "type": "integer",
+                    "description": "39=Premier, 140=La Liga, 135=Serie A, 78=Bundesliga, 61=Ligue 1, 94=Primeira, 2=Champions",
+                },
+            },
+            "required": ["league_id"],
+        },
+    },
+    {
         "name": "get_head_to_head",
         "description": (
             "Historial directo entre dos equipos: balance de victorias, empates y "
@@ -263,6 +309,9 @@ HANDLERS: dict[str, Callable[..., Any]] = {
     "get_team_form": lambda team_id, last=5, before=None: engine.get_team_form(
         team_id, before=_parse_date(before), last=last
     ),
+    "get_recent_lineup": lambda team_id: engine.get_recent_lineup(team_id),
+    "get_team_squad": lambda team_id, last=10: engine.get_team_squad(team_id, last),
+    "get_league_info": lambda league_id: engine.get_league_info(league_id),
     "get_head_to_head": lambda team_a, team_b, limit=10: engine.get_head_to_head(
         team_a, team_b, limit
     ),
