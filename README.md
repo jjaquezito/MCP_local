@@ -164,7 +164,7 @@ Transport: stdio, newline-delimited JSON. Protocol version `2025-06-18`.
 | `initialize` | Handshake. Returns `serverInfo` and capabilities. |
 | `notifications/initialized` | Client notification. No `id`, no response. |
 | `ping` | Liveness check. Returns `{}`. |
-| `tools/list` | Returns the fourteen tool definitions. |
+| `tools/list` | Returns the fifteen tool definitions. |
 | `tools/call` | Executes a tool. |
 
 Errors follow JSON-RPC 2.0: `-32700` parse error, `-32600` invalid request,
@@ -384,6 +384,42 @@ scikit-learn pipeline, not raw weights). Retraining requires the full feature
 pipeline (`conocimiento/ml/`), which lives in the private project repository,
 not here — same relationship as `data/football.dump` to the extraction
 pipeline that built it.
+
+### `predict_scoreline`
+
+Complements `predict_match` with a full scoreline probability grid — the
+chance of every exact result from 0-0 up to `max_goals`-`max_goals` — using a
+Poisson model over each team's recent goals scored/conceded, plus expected
+yellow cards and corners for the match and the probability both teams score.
+This is a different statistical method from `predict_match`'s trained
+classifier, not the same number recomputed, so a small mismatch between the
+two (e.g. draw probability) is expected and not a bug.
+
+| Parameter | Type | Required | Default |
+|---|---|---|---|
+| `home_team_id` | integer | yes | — |
+| `away_team_id` | integer | yes | — |
+| `max_goals` | integer | no | 5 |
+
+```json
+{"name": "predict_scoreline", "arguments": {"home_team_id": 529, "away_team_id": 531}}
+```
+
+```json
+{
+  "local": "Barcelona", "visitante": "Athletic Club",
+  "goles_esperados_local": 1.8, "goles_esperados_visitante": 1.3,
+  "marcador_mas_probable": "1-1", "probabilidad_marcador_mas_probable": 10.54,
+  "probabilidad_ambos_marcan": 59.8,
+  "tarjetas_amarillas_esperadas": 3.5, "corners_esperados": 12.8,
+  "matriz_marcadores": [[4.5, 5.9, 3.8, "..."], ["..."]]
+}
+```
+
+`matriz_marcadores[i][j]` is the percentage chance of a `i`-`j` final score
+(home goals first), so `matriz_marcadores[1][1]` is the chance of exactly
+1-1. Cells beyond `max_goals` in either direction aren't included, so the
+grid's total is slightly under 100% by design.
 
 ## Example session
 
