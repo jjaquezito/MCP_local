@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -664,6 +665,93 @@ def predict_match(home_team_id: int, away_team_id: int) -> dict[str, Any]:
             "Probabilidad estadistica basada en historial, no una garantia. "
             "El modelo acierta ~52-55% de los resultados en prueba historica; "
             "usar junto con contexto actual (lesiones, motivacion) antes de decidir."
+        ),
+    }
+
+
+def _poisson(k: int, lam: float) -> float:
+    # Probabilidad de que un equipo anote exactamente k goles, si en promedio
+    # anota lam goles por partido. Formula estandar de Poisson, la misma
+    # tecnica que usan la mayoria de paneles de "marcador probable" en apps
+    # deportivas.
+    if lam <= 0:
+        return 1.0 if k == 0 else 0.0
+    return math.exp(-lam) * (lam ** k) / math.factorial(k)
+
+
+def predict_scoreline(home_team_id: int, away_team_id: int, max_goals: int = 5) -> dict[str, Any]:
+    # Complementa predict_match: en vez de una sola probabilidad de
+    # local/empate/visitante, arma una matriz con la probabilidad de cada
+    # marcador exacto posible, mas tarjetas y corners esperados. Es un
+    # metodo estadistico distinto (Poisson sobre goles anotados/recibidos
+    # recientes), no el mismo modelo entrenado de predict_match, asi que
+    # sus numeros pueden no coincidir exactamente y eso es normal.
+    home = _one("SELECT * FROM team_current_form WHERE team_id = %s", (home_team_id,))
+    away = _one("SELECT * FROM team_current_form WHERE team_id = %s", (away_team_id,))
+    if home is None or away is None:
+        sin_datos = home_team_id if home is None else away_team_id
+        return {
+            "error": f"No hay historial suficiente para el equipo {sin_datos}. "
+                     "Verifica el id con search_team.",
+        }
+
+    def _f(v: Any) -> float | None:
+        return float(v) if v is not None else None
+
+    # Gol esperado de un equipo = promedio entre lo que suele anotar y lo
+    # que suele conceder el rival. 1.3 es un valor neutral de respaldo si
+    # a algun equipo le falta ese dato (el promedio real de la base ronda
+    # ese numero).
+    home_gf, home_ga = _f(home["gf_avg_5"]) or 1.3, _f(home["ga_avg_5"]) or 1.3
+    away_gf, away_ga = _f(away["gf_avg_5"]) or 1.3, _f(away["ga_avg_5"]) or 1.3
+    lam_local = (home_gf + away_ga) / 2
+    lam_visita = (away_gf + home_ga) / 2
+
+    prob_local = [_poisson(i, lam_local) for i in range(max_goals + 1)]
+    prob_visita = [_poisson(j, lam_visita) for j in range(max_goals + 1)]
+
+    matriz = [
+        [round(prob_local[i] * prob_visita[j] * 100, 2) for j in range(max_goals + 1)]
+        for i in range(max_goals + 1)
+    ]
+    mejor_i, mejor_j, mejor_pct = max(
+        ((i, j, matriz[i][j]) for i in range(max_goals + 1) for j in range(max_goals + 1)),
+        key=lambda x: x[2],
+    )
+    prob_ambos_marcan = sum(
+        prob_local[i] * prob_visita[j]
+        for i in range(1, max_goals + 1) for j in range(1, max_goals + 1)
+    ) * 100
+
+    tarjetas = (_f(home["yellow_avg_5"]) or 0.0) + (_f(away["yellow_avg_5"]) or 0.0)
+    corners = (_f(home["corners_avg_5"]) or 0.0) + (_f(away["corners_avg_5"]) or 0.0)
+
+    nombres = _rows(
+        "SELECT team_id, name, logo FROM teams WHERE team_id IN (%s, %s)",
+        (home_team_id, away_team_id),
+    )
+    info = {r["team_id"]: r for r in nombres}
+
+    return {
+        "local": (info.get(home_team_id) or {}).get("name"),
+        "local_team_id": home_team_id,
+        "local_logo": (info.get(home_team_id) or {}).get("logo"),
+        "visitante": (info.get(away_team_id) or {}).get("name"),
+        "visitante_team_id": away_team_id,
+        "visitante_logo": (info.get(away_team_id) or {}).get("logo"),
+        "goles_esperados_local": round(lam_local, 2),
+        "goles_esperados_visitante": round(lam_visita, 2),
+        "marcador_mas_probable": f"{mejor_i}-{mejor_j}",
+        "probabilidad_marcador_mas_probable": mejor_pct,
+        "matriz_marcadores": matriz,
+        "probabilidad_ambos_marcan": round(prob_ambos_marcan, 1),
+        "tarjetas_amarillas_esperadas": round(tarjetas, 1),
+        "corners_esperados": round(corners, 1),
+        "nota": (
+            "Estimacion con un modelo de Poisson sobre el promedio de goles "
+            "anotados y recibidos en partidos recientes de cada equipo. Es una "
+            "aproximacion estadistica, no una prediccion exacta, y es normal que "
+            "no coincida al cien por ciento con predict_match, que usa otro metodo."
         ),
     }
 
