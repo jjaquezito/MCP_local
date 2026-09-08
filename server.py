@@ -283,6 +283,32 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["home_team_id", "away_team_id"],
         },
     },
+    {
+        "name": "predict_scoreline",
+        "description": (
+            "Complementa predict_match con una matriz de probabilidad para cada "
+            "marcador exacto posible (0-0, 1-0, 2-1, etc.), usando un modelo de "
+            "Poisson sobre los goles que cada equipo suele anotar y conceder. "
+            "Tambien devuelve el marcador mas probable, la probabilidad de que "
+            "ambos equipos anoten, y tarjetas amarillas y corners esperados en "
+            "total para el partido. Es un metodo estadistico distinto al de "
+            "predict_match, no la misma prediccion recalculada -- usar ambas "
+            "herramientas juntas para un analisis completo de un partido."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "home_team_id": {"type": "integer", "description": "Equipo que juega de local"},
+                "away_team_id": {"type": "integer", "description": "Equipo que juega de visitante"},
+                "max_goals": {
+                    "type": "integer",
+                    "description": "Goles maximos por equipo en la matriz",
+                    "default": 5,
+                },
+            },
+            "required": ["home_team_id", "away_team_id"],
+        },
+    },
 ]
 
 
@@ -326,6 +352,9 @@ HANDLERS: dict[str, Callable[..., Any]] = {
     "data_coverage": lambda league_id=None, season=None: engine.data_coverage(league_id, season),
     "predict_match": lambda home_team_id, away_team_id: engine.predict_match(
         home_team_id, away_team_id
+    ),
+    "predict_scoreline": lambda home_team_id, away_team_id, max_goals=5: engine.predict_scoreline(
+        home_team_id, away_team_id, max_goals
     ),
 }
 
