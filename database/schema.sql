@@ -307,3 +307,124 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_completed_unique
     WHERE status = 'completed';
 
 COMMIT;
+
+
+-- ---------------------------------------------------------------------
+-- Prediccion: features de entrenamiento, historial de Elo, estado actual
+-- ---------------------------------------------------------------------
+-- Regla unica e innegociable: ninguna columna de prematch_features puede
+-- contener informacion generada durante o despues del partido que describe.
+-- Todo se calcula con partidos estrictamente anteriores.
+
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS prematch_features (
+    fixture_id      INTEGER PRIMARY KEY REFERENCES fixtures(fixture_id) ON DELETE CASCADE,
+    league_id       INTEGER NOT NULL,
+    season          INTEGER NOT NULL,
+    kickoff_utc     TIMESTAMPTZ NOT NULL,
+    home_team_id    INTEGER NOT NULL,
+    away_team_id    INTEGER NOT NULL,
+
+    -- Fuerza acumulada (Elo continuo desde 2010, arrastra entre temporadas)
+    home_elo            NUMERIC(7,2),
+    away_elo             NUMERIC(7,2),
+    elo_diff             NUMERIC(7,2),
+
+    -- Forma reciente: ultimos 5 partidos de cualquier competicion
+    home_form_pts_5     INTEGER,
+    away_form_pts_5     INTEGER,
+    home_gf_avg_5       NUMERIC(5,2),
+    away_gf_avg_5       NUMERIC(5,2),
+    home_ga_avg_5       NUMERIC(5,2),
+    away_ga_avg_5       NUMERIC(5,2),
+
+    -- Forma en la condicion que jugara: local en casa, visitante fuera
+    home_home_pts_5     INTEGER,
+    away_away_pts_5     INTEGER,
+
+    -- Promedios de juego, ultimos 5 partidos con estadisticas
+    home_shots_avg_5        NUMERIC(5,2),
+    away_shots_avg_5        NUMERIC(5,2),
+    home_sot_avg_5          NUMERIC(5,2),
+    away_sot_avg_5          NUMERIC(5,2),
+    home_poss_avg_5         NUMERIC(5,2),
+    away_poss_avg_5         NUMERIC(5,2),
+    home_corners_avg_5      NUMERIC(5,2),
+    away_corners_avg_5      NUMERIC(5,2),
+    home_pass_acc_avg_5     NUMERIC(5,2),
+    away_pass_acc_avg_5     NUMERIC(5,2),
+
+    -- Contexto del calendario
+    home_rest_days      INTEGER,
+    away_rest_days      INTEGER,
+    rest_diff            INTEGER,
+    home_matches_played  INTEGER,   -- jornadas disputadas en la temporada
+    away_matches_played  INTEGER,
+
+    -- Historial directo (solo partidos previos a este)
+    h2h_home_wins       INTEGER,
+    h2h_draws           INTEGER,
+    h2h_away_wins       INTEGER,
+
+    -- Etiqueta de entrenamiento. NO es una feature.
+    result              CHAR(1) NOT NULL,
+
+    built_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pf_season   ON prematch_features (season);
+CREATE INDEX IF NOT EXISTS idx_pf_league   ON prematch_features (league_id, season);
+CREATE INDEX IF NOT EXISTS idx_pf_kickoff  ON prematch_features (kickoff_utc);
+
+-- Ratings Elo por equipo y fecha, para poder reconstruir el estado de fuerza
+-- en cualquier momento del historico y para predecir partidos futuros.
+CREATE TABLE IF NOT EXISTS team_elo_history (
+    team_id     INTEGER NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+    fixture_id  INTEGER NOT NULL REFERENCES fixtures(fixture_id) ON DELETE CASCADE,
+    kickoff_utc TIMESTAMPTZ NOT NULL,
+    elo_before  NUMERIC(7,2) NOT NULL,
+    elo_after   NUMERIC(7,2) NOT NULL,
+    PRIMARY KEY (team_id, fixture_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_elo_team_date ON team_elo_history (team_id, kickoff_utc DESC);
+
+-- Snapshot del estado MAS RECIENTE de cada equipo. prematch_features solo
+-- describe partidos que ya existen como fila en fixtures (result NOT NULL);
+-- para predecir un partido futuro que aun no esta agendado no hay fixture_id
+-- al cual amarrarse, asi que predict_match y predict_scoreline usan esta
+-- tabla en su lugar. Se sobrescribe completa cada vez que corre
+-- build_features.py.
+CREATE TABLE IF NOT EXISTS team_current_form (
+    team_id           INTEGER PRIMARY KEY REFERENCES teams(team_id) ON DELETE CASCADE,
+
+    elo               NUMERIC(7,2) NOT NULL,
+
+    -- Ultimos 5 partidos de cualquier competicion
+    form_pts_5        INTEGER,
+    gf_avg_5          NUMERIC(5,2),
+    ga_avg_5          NUMERIC(5,2),
+
+    -- Puntos en los ultimos 5 jugando de local / de visita, por separado
+    home_pts_5        INTEGER,
+    away_pts_5        INTEGER,
+
+    -- Promedios de juego, ultimos 5 partidos con estadisticas (2015+)
+    shots_avg_5       NUMERIC(5,2),
+    sot_avg_5         NUMERIC(5,2),
+    poss_avg_5        NUMERIC(5,2),
+    corners_avg_5     NUMERIC(5,2),
+    pass_acc_avg_5    NUMERIC(5,2),
+
+    -- Disciplina, para las tarjetas/corners esperados de predict_scoreline
+    yellow_avg_5      NUMERIC(5,2),
+    red_avg_5         NUMERIC(5,2),
+    fouls_avg_5       NUMERIC(5,2),
+
+    last_match_utc    TIMESTAMPTZ,
+
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+COMMIT;
